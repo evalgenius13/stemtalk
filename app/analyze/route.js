@@ -4,7 +4,7 @@ import { decode } from "wav-decoder";
 import OpenAI from "openai";
 
 // Run this route in Node.js environment (not edge) to support file uploads
-export const dynamic = "force-dynamic";
+export const runtime = 'nodejs';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
