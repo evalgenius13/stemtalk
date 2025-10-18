@@ -3,8 +3,8 @@ import { parseBuffer } from "music-metadata";
 import { decode } from "wav-decoder";
 import OpenAI from "openai";
 
-// Run this route in Node.js environment (not edge) to support file uploads
-export const runtime = 'nodejs';
+// Optional hint: force dynamic rendering to support uploads
+export const dynamic = "force-dynamic";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
