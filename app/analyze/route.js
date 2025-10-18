@@ -3,9 +3,11 @@ import { parseBuffer } from "music-metadata";
 import { decode } from "wav-decoder";
 import OpenAI from "openai";
 
+// Run this route in Node.js environment (not edge) to support file uploads
+export const dynamic = "force-dynamic";
+
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// --- basic DSP metrics ---
 function analyzeAudio(samples, sampleRate) {
   const n = samples.length;
   const rms = Math.sqrt(samples.reduce((a, v) => a + v * v, 0) / n);
@@ -24,12 +26,13 @@ function analyzeAudio(samples, sampleRate) {
   };
 }
 
-// --- main handler ---
 export async function POST(req) {
   try {
     const formData = await req.formData();
     const file = formData.get("file");
-    if (!file) return NextResponse.json({ error: "No file uploaded" }, { status: 400 });
+    if (!file) {
+      return NextResponse.json({ error: "No file uploaded" }, { status: 400 });
+    }
 
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
