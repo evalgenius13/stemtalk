@@ -10,8 +10,10 @@ export default function AnalyzePanel() {
     e.preventDefault();
     if (!file) return;
     setLoading(true);
+
     const formData = new FormData();
     formData.append("file", file);
+
     const res = await fetch("/api/analyze", { method: "POST", body: formData });
     const data = await res.json();
     setResult(data);
