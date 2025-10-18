@@ -5,6 +5,7 @@ import OpenAI from "openai";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+// --- basic DSP metrics ---
 function analyzeAudio(samples, sampleRate) {
   const n = samples.length;
   const rms = Math.sqrt(samples.reduce((a, v) => a + v * v, 0) / n);
@@ -23,25 +24,25 @@ function analyzeAudio(samples, sampleRate) {
   };
 }
 
+// --- main handler ---
 export async function POST(req) {
   try {
-    const data = await req.formData();
-    const file = data.get("file");
+    const formData = await req.formData();
+    const file = formData.get("file");
     if (!file) return NextResponse.json({ error: "No file uploaded" }, { status: 400 });
 
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    const meta = await parseBuffer(buffer, file.type);
+    const metadata = await parseBuffer(buffer, file.type);
     const wav = await decode(buffer);
-    const channelData = wav.channelData[0];
+    const samples = wav.channelData[0];
     const sampleRate = wav.sampleRate;
-
-    const analysis = analyzeAudio(channelData, sampleRate);
+    const analysis = analyzeAudio(samples, sampleRate);
 
     const prompt = `
 You are an experienced mix engineer.
-Given these metrics, provide 3 short insights about mix quality (hip hop, trap, R&B):
+Given these metrics, provide 3 concise insights about mix quality for hip hop, trap, or R&B:
 
 LUFS: ${analysis.lufs}
 RMS: ${analysis.rms}
@@ -49,7 +50,7 @@ Peak: ${analysis.peak}
 Dynamic Range: ${analysis.dynamicRange}
 Stereo Width: ${analysis.stereoWidth}
 
-Respond as JSON:
+Respond in JSON:
 {
   "mixSummary": "...",
   "recommendations": ["...", "...", "..."]
@@ -61,12 +62,12 @@ Respond as JSON:
       temperature: 0.5,
     });
 
-    const responseText = ai.choices[0].message.content;
+    const text = ai.choices[0].message.content;
     let feedback;
     try {
-      feedback = JSON.parse(responseText);
+      feedback = JSON.parse(text);
     } catch {
-      feedback = { mixSummary: responseText, recommendations: [] };
+      feedback = { mixSummary: text, recommendations: [] };
     }
 
     return NextResponse.json({ analysis, feedback });
@@ -75,7 +76,3 @@ Respond as JSON:
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
-
-export const config = {
-  api: { bodyParser: false },
-};
