@@ -1,15 +1,17 @@
 import { NextResponse } from "next/server";
-import { parseBuffer } from "music-metadata";
-import { decode } from "wav-decoder";
-import OpenAI from "openai";
 
-// Force Node runtime so Buffer and native modules work correctly in Next
+// Run under Node runtime so Buffer and Node APIs are available at runtime
 export const runtime = "nodejs";
-// Force dynamic rendering to support uploads
+// Keep dynamic to allow request-time behavior for uploads
 export const dynamic = "force-dynamic";
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
+/**
+ * Important change:
+ * - All heavy or native/third-party modules (music-metadata, wav-decoder, openai)
+ *   are dynamically imported inside the request handler to avoid build-time
+ *   evaluation/bundling errors. This prevents Next's build from trying to
+ *   statically analyze or bundle modules that may fail during build.
+ */
 function analyzeAudio(samples, sampleRate) {
   const n = samples.length;
   if (n === 0) {
@@ -46,37 +48,57 @@ export async function POST(req) {
       return NextResponse.json({ error: "No file uploaded" }, { status: 400 });
     }
 
-    // Convert uploaded file to ArrayBuffer and Node Buffer where needed
+    // Read file data
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    // Parse metadata using Buffer (music-metadata accepts Buffer)
+    // Dynamically import modules at request time to avoid build-time bundling errors
+    const mm = await import("music-metadata").catch((e) => {
+      console.warn("failed to import music-metadata:", e?.message || e);
+      return null;
+    });
+    const wavDecoder = await import("wav-decoder").catch((e) => {
+      console.warn("failed to import wav-decoder:", e?.message || e);
+      return null;
+    });
+    const OpenAI = (await import("openai")).default?.catch?.(() => null) ?? (await import("openai")).default;
+
+    // Parse metadata (non-fatal)
     let metadata = {};
-    try {
-      metadata = (await parseBuffer(buffer, { mimeType: file.type })).format || {};
-    } catch (err) {
-      console.warn("music-metadata parse failed:", err?.message || err);
-      metadata = {};
+    if (mm && mm.parseBuffer) {
+      try {
+        const parsed = await mm.parseBuffer(buffer, { mimeType: file.type });
+        metadata = parsed?.format || {};
+      } catch (err) {
+        console.warn("music-metadata parse failed:", err?.message || err);
+      }
     }
 
-    // Decode audio with wav-decoder (expects ArrayBuffer)
+    // Decode audio (wav-decoder expects ArrayBuffer and supports PCM WAV)
+    if (!wavDecoder || !wavDecoder.decode) {
+      return NextResponse.json(
+        { error: "Audio decoder not available on the server. Ensure wav-decoder is installed." },
+        { status: 500 }
+      );
+    }
+
     let wav;
     try {
-      wav = await decode(arrayBuffer);
+      wav = await wavDecoder.decode(arrayBuffer);
     } catch (err) {
       console.error("wav-decoder failed:", err?.message || err);
       return NextResponse.json(
-        { error: "Failed to decode audio. Please upload a WAV or supported PCM file." },
+        { error: "Failed to decode audio. Please upload a WAV (PCM) file or use a server decoder (ffmpeg) for other formats." },
         { status: 415 }
       );
     }
 
-    // channelData is an array per channel; pick first channel or average channels
     const channels = wav.channelData || [];
     if (!channels.length || !channels[0] || channels[0].length === 0) {
       return NextResponse.json({ error: "No audio samples found" }, { status: 422 });
     }
 
+    // If multi-channel, downmix to mono
     let samples = channels[0];
     if (channels.length > 1) {
       try {
@@ -96,6 +118,7 @@ export async function POST(req) {
     const sampleRate = wav.sampleRate || metadata.sampleRate || 44100;
     const analysis = analyzeAudio(Array.from(samples), sampleRate);
 
+    // Build prompt
     const prompt = `
 You are an experienced mix engineer.
 Given these metrics, provide 3 concise insights about mix quality for hip hop, trap, or R&B:
@@ -113,18 +136,52 @@ Respond in JSON exactly as a single JSON object, without additional explanation:
 }
 `;
 
-    const ai = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0.5,
-    });
+    // Create OpenAI client and call model (dynamically imported)
+    if (!OpenAI) {
+      // If the OpenAI client couldn't be imported for some reason, return an error
+      console.warn("openai client not available");
+      return NextResponse.json({ analysis, feedback: { mixSummary: "OpenAI client not available", recommendations: [] }, metadata }, { status: 200 });
+    }
 
-    const text = ai?.choices?.[0]?.message?.content || "";
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+    // Some versions of the OpenAI JS client expose different methods.
+    // Try chat.completions.create, otherwise fallback to the older/newer shapes.
+    let aiText = "";
+    try {
+      if (openai.chat?.completions?.create) {
+        const ai = await openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: [{ role: "user", content: prompt }],
+          temperature: 0.5,
+        });
+        aiText = ai?.choices?.[0]?.message?.content ?? "";
+      } else if (openai.chat?.create) {
+        const ai = await openai.chat.create({
+          model: "gpt-4o-mini",
+          messages: [{ role: "user", content: prompt }],
+        });
+        aiText = ai?.choices?.[0]?.message?.content ?? "";
+      } else if (openai.completions?.create) {
+        const ai = await openai.completions.create({
+          model: "gpt-4o-mini",
+          prompt,
+          max_tokens: 500,
+        });
+        aiText = ai?.choices?.[0]?.text ?? "";
+      } else {
+        aiText = "OpenAI client API surface unexpected; no completion was called.";
+      }
+    } catch (err) {
+      console.error("OpenAI call failed:", err?.message || err);
+      aiText = err?.message || "";
+    }
+
     let feedback;
     try {
-      feedback = JSON.parse(text);
+      feedback = JSON.parse(aiText);
     } catch {
-      feedback = { mixSummary: text.trim(), recommendations: [] };
+      feedback = { mixSummary: aiText.trim(), recommendations: [] };
     }
 
     return NextResponse.json({ analysis, feedback, metadata });
