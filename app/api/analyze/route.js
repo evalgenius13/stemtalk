@@ -53,21 +53,17 @@ export async function POST(req) {
     // Parse metadata using Buffer (music-metadata accepts Buffer)
     let metadata = {};
     try {
-      // second argument can be the mime type
       metadata = (await parseBuffer(buffer, { mimeType: file.type })).format || {};
     } catch (err) {
-      // non-fatal: we can continue without metadata
       console.warn("music-metadata parse failed:", err?.message || err);
       metadata = {};
     }
 
     // Decode audio with wav-decoder (expects ArrayBuffer)
-    // Note: wav-decoder handles PCM WAV. If an mp3/other format is uploaded decode may fail.
     let wav;
     try {
       wav = await decode(arrayBuffer);
     } catch (err) {
-      // If decode fails, return friendly error
       console.error("wav-decoder failed:", err?.message || err);
       return NextResponse.json(
         { error: "Failed to decode audio. Please upload a WAV or supported PCM file." },
@@ -83,7 +79,6 @@ export async function POST(req) {
 
     let samples = channels[0];
     if (channels.length > 1) {
-      // simple downmix to mono by averaging channels sample-wise (if lengths match)
       try {
         const len = Math.min(...channels.map((c) => c.length));
         const mono = new Float32Array(len);
@@ -94,7 +89,6 @@ export async function POST(req) {
         }
         samples = mono;
       } catch {
-        // fallback to first channel
         samples = channels[0];
       }
     }
@@ -102,7 +96,6 @@ export async function POST(req) {
     const sampleRate = wav.sampleRate || metadata.sampleRate || 44100;
     const analysis = analyzeAudio(Array.from(samples), sampleRate);
 
-    // Build prompt for OpenAI to return JSON feedback
     const prompt = `
 You are an experienced mix engineer.
 Given these metrics, provide 3 concise insights about mix quality for hip hop, trap, or R&B:
@@ -120,7 +113,6 @@ Respond in JSON exactly as a single JSON object, without additional explanation:
 }
 `;
 
-    // Call OpenAI (using chat completions)
     const ai = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [{ role: "user", content: prompt }],
@@ -132,7 +124,6 @@ Respond in JSON exactly as a single JSON object, without additional explanation:
     try {
       feedback = JSON.parse(text);
     } catch {
-      // If model doesn't produce strictly valid JSON, wrap it
       feedback = { mixSummary: text.trim(), recommendations: [] };
     }
 
